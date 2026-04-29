@@ -1,8 +1,8 @@
-# Web3 Bot
+# Base Yield Lab
 
 Open-source study project for learning DeFi automation on the Base network.
 
-The bot reads live on-chain data, compares USDC supply opportunities between Aave V3 and Compound III, applies deterministic safety checks, and can prepare or execute transactions depending on the configured mode.
+Base Yield Lab reads live on-chain data, compares USDC supply opportunities between Aave V3 and Compound III, applies deterministic safety checks, and can prepare or execute transactions depending on the configured mode.
 
 It was built as a learning project. Anyone can fork it, run it, inspect it, and adapt it.
 
@@ -173,4 +173,3 @@ Good next steps:
 ## License
 
 MIT. See [LICENSE](LICENSE).
-

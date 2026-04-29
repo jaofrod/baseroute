@@ -36,7 +36,7 @@ import streamlit as st
 # a largura total da tela ("wide") ou fica centralizado ("centered").
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="DeFAI Bot",
+    page_title="Base Yield Lab",
     page_icon="⚡",
     layout="wide",
 )
@@ -258,7 +258,7 @@ col_title, col_controls = st.columns([4, 1])
 
 with col_title:
     mode = state["mode"] or "Aguardando primeiro ciclo..."
-    st.title(f"DeFAI Bot — {mode}")
+    st.title(f"Base Yield Lab — {mode}")
     if state["last_cycle"]:
         st.caption(f"Ultimo ciclo registrado: {state['last_cycle']}")
     else:
