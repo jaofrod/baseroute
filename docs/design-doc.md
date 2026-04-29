@@ -1,102 +1,65 @@
-📄 Design Doc: Agente Autônomo de Oportunidades On-Chain (DeFAI)
+# Design Doc: Base Yield Lab
 
-## 1. O QUE (Visão Geral do Sistema)
-O sistema é um robô autônomo backend (Python) composto por três motores principais:
+## Overview
 
-    - Ouvinte (Analytics/Indexer)
-      Fica lendo a blockchain em tempo real via Alchemy para encontrar gatilhos (ex: variação de juros, grandes movimentações).
+Base Yield Lab is a Python backend bot for studying DeFi automation on Base.
 
-    - Cérebro (LLM/Engine de Decisão)
-      Recebe o contexto do Ouvinte, analisa o risco/recompensa com base em um prompt predefinido e decide se há uma oportunidade lucrativa.
+The system has three main parts:
 
-    - Mão (Executor/Signer)
-      Recebe a ordem do Cérebro, formata a transação, assina com uma chave privada segura e envia para a blockchain.
+- `listener`: reads on-chain data through an RPC provider
+- `engine`: evaluates the current state and chooses an action
+- `executor`: builds, signs, and optionally broadcasts transactions
 
+The core loop is simple:
 
-## 2. COMO (A Arquitetura e o Tech Stack)
-Tech Stack
+1. Read protocol and wallet state from Base.
+2. Build a structured state object.
+3. Ask the decision engine for an action.
+4. Validate the proposed action with deterministic rules.
+5. If validation passes, execute the move.
 
-    - Linguagem: Python 3.11+
-    - Comunicação Web3: web3.py (Para interagir com a rede) + Alchemy (Provedor de RPC).
-    - Inteligência: Anthropic (Claude 3.5 Sonnet) via API.
-    - Orquestração de Agente: LangChain ou framework nativo simples (Function Calling).
+## Stack
 
-O Fluxo de Execução (Loop Principal)
+- Python 3.11+
+- `web3.py` for EVM reads and writes
+- Alchemy or another Base RPC provider
+- Streamlit for the local dashboard
+- Anthropic tool calling for structured decisions
 
-    - Cron/Worker: A cada X minutos, o script bate no Alchemy e pega os dados da rede (ex: Saldo atual, taxas de juros no Aave).
-    - State Builder: O Python formata esses dados em um JSON estruturado.
-    - Prompting: O JSON é enviado para o LLM junto com as "Tools" disponíveis (ex: sacar, depositar, fazer_swap).
-    - Decisão: O LLM responde com a Tool a ser chamada e os parâmetros (ex: do_swap(token="USDC", amount=50)).
-    - Validação Determinística: O Python intercepta a decisão e passa por um "Firewall" (regras de segurança hardcoded).
-    - Broadcast: A transação é assinada criptograficamente e enviada via w3.eth.send_raw_transaction.
+## Risk Controls
 
-## 3. Mitigar possíveis problemas
-    - Vazamento da Chave Privada
-      Nunca deixar a chave no disco. Usra gerenciador de segredos em nuvem.
+The design assumes that financial automation needs hard guardrails.
 
-    - Alucinação da IA
-      Guardrails determinísticos: O LLM sugere, o Python aprova.
-      Regras em código rígido: if tx_acmount > MAX_LIMIT: abort().
-      A IA NUNCA tem a chave, só o Python tem.
+Main controls:
 
-    - Rate Limits da API (Alchemy)
-      O Python deve sempre consultar o w3.eth.gas_price atual.
-      A IA só aprova o trade se: Lucro Esperado > (Custo do Gas * 1.5)
+- private key stays outside source control and outside the prompt layer
+- deterministic validation happens before every transaction
+- paper trading mode tests the full transaction-building flow without broadcasting
+- gas cost and cooldown thresholds reduce noisy or wasteful moves
+- contract allowlists prevent unexpected destinations
 
-    - Transações Presas
-      Sistema de monitoramento de Nonce. Se a TX não for confirmada em 3 blocos,
-      o sistema recria a TX com a mesma identificação (nonce) e um gas maior para sobrescrevê-la
+## Failure Modes
 
-obs: "gas" significa a taxa medida em GWEI(fração pequena de ETH), que usuários pagam aos validadores
-     para processas transações o executar contratos inteligentes na rede Ethereum.
-     Gas Price maior: prioriza a transação
-     Gas Price menor: torna a TX mais barata, porém mais lenta
-     Quando a rede está congestionada, o gas price aumenta
+Important failure cases:
 
+- private key leakage
+- malformed or unsafe decisions
+- RPC rate limits or temporary provider outages
+- stuck or reverted transactions
+- low ETH balance for gas
 
-## 4. QUANDO (Roadmap de Implementação Rápida)
-Para tirar do papel sem frustração, vamos fatiar o elefante em 4 fases:
+The operating principle is conservative fallback. If something is unclear or broken, the system should prefer `hold`.
 
-    Fase 1: "O Olho" FEITO
+## Implementation Phases
 
-        Meta: Conectar via Alchemy, ler saldos, ler taxas de juros de contratos, e criar o JSON de estado. Nenhuma IA ainda. Nenhuma transação financeira.
+The project evolved in phases:
 
-    Fase 2: "O Paper Trading"
+1. Read-only on-chain state collection.
+2. Paper trading with real market data.
+3. Testnet or sandbox validation.
+4. Small-capital mainnet operation.
 
-        Meta: Plugar o LLM. Alimentar os dados para ele e pedir decisões. O Python NÃO executa a transação, apenas dá um print() do que a IA decidiu para validarmos se ela não é "burra".
+## Open Source Position
 
-    Fase 3: "O Sandbox"
+This repository is open source because it is primarily a study project. The goal is to make the architecture, transaction flow, and safety model legible to anyone who wants to learn from it or reuse parts of it.
 
-        Meta: Criar uma carteira em uma Testnet (Rede de testes onde o dinheiro é de mentira, tipo Sepolia ou Base Sepolia). Deixar o robô rodar solto lá por uns dias enviando transações falsas.
-
-    Fase 4: "Skin in the Game"
-
-        Meta: Deploy na Mainnet (Rede principal) com dinheiro real, mas com fundos super limitados (ex: colocar apenas 20 dólares de USDC na carteira do robô) para ver a roda girar de verdade.
-
-
-## Regras de ouro da proteção
-A chave privada deve ser MUUUITO PRIVADA.
- - Nunca printar ela em lado nenhum.
- - Nunca salvar num JSON
- - Nunca encostar no github, mesmo num repo privado, se chegar a tocar no github a chave já está comprometida
-
-
-## 5. EVOLUCAO: Framework Open-Source (DeFAI Agent Framework)
-
-O projeto esta sendo reposicionado de bot pessoal para um **framework open-source** que permite qualquer desenvolvedor criar agentes DeFi autonomos com IA.
-
-### O que muda
-- **Plugin system:** estrategias viram plugins (BaseStrategy ABC), permitindo criar novas estrategias sem mexer no core
-- **Config YAML:** parametros, protocolos, chains e thresholds configurados via arquivo YAML em vez de constantes hardcoded
-- **Integracoes modulares:** cada protocolo (Aave, Compound, etc.) vira um modulo independente com interface padrao (IntegrationBase)
-- **Multi-chain:** suporte a multiplas redes EVM (Base, Optimism, Arbitrum) via configuracao
-
-### O que NAO muda
-- Arquitetura core: Listener → Engine → Firewall → Executor
-- Seguranca: Firewall deterministico, chave privada isolada
-- A estrategia atual de yield optimization vira o "plugin exemplo" do framework
-
-### Objetivo
-Qualificar o projeto para foundation grants (Base, Aave, Compound, Optimism) como infra publica open-source, e ao mesmo tempo criar uma ferramenta reutilizavel pela comunidade DeFi.
-
-Para a estrategia completa de grants e detalhes arquiteturais do framework, ver: **[grant-strategy.md](./grant-strategy.md)**

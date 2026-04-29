@@ -1,20 +1,12 @@
 """
-engine.py — O Cerebro do bot. Usa Claude (LLM) para tomar decisoes.
+engine.py — Decision engine for the bot.
 
-CONCEITO: Tool Use (Function Calling)
-Em vez de pedir pro LLM responder em texto livre ("acho que deveria mover
-para o Aave"), definimos "tools" — funcoes estruturadas que o LLM pode
-chamar. O LLM retorna um JSON com o nome da tool e os parametros.
+The engine sends the current bot state to Claude using tool calling and
+expects a structured action in response.
 
-Vantagem: resposta 100% parseavel. Sem regex, sem "extraia o numero do
-texto". O LLM retorna exatamente {tool: "move_funds", from: "aave_v3",
-to: "compound_iii", amount: 50}.
-
-CONCEITO: Safe defaults
-Se a API do Claude falhar, se o LLM nao retornar tool_use, se o JSON
-vier malformado — o fallback e SEMPRE "hold" (nao fazer nada).
-Errar por inacao e infinitamente melhor que errar por acao quando
-estamos mexendo com dinheiro real.
+Safe default:
+If the API fails, no tool call is returned, or the payload is malformed,
+the fallback is always `hold`.
 """
 
 import json
@@ -35,55 +27,37 @@ from state import BotState, LLMAction
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# CLIENT
-# ============================================================
-
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
 MODEL = "claude-sonnet-4-20250514"
 
-# ============================================================
-# SYSTEM PROMPT
-#
-# CONCEITO: Prompting para agentes financeiros
-# O system prompt define as "regras do jogo". Interpolamos os
-# thresholds reais para que o LLM nao invente numeros proprios.
-# Quanto mais especifico o prompt, menos margem pra alucinacao.
-# ============================================================
+SYSTEM_PROMPT = f"""You are a DeFi agent managing a USDC position on Base.
+Your goal is to maximize yield by moving capital between Aave V3 and
+Compound III while minimizing gas costs and operational risk.
 
-SYSTEM_PROMPT = f"""Voce e um agente DeFi que gerencia uma posicao de USDC na rede Base.
-Seu objetivo e maximizar o rendimento (APY) movendo capital entre Aave V3
-e Compound III, minimizando custos de gas e riscos.
+Rules:
+- Only operate on USDC and approved protocols (Aave V3, Compound III)
+- Only move capital if the APY difference is >= {MIN_APY_DIFF}%
+- Always consider gas cost before deciding
+- If both APYs are below {MIN_APY_ABSOLUTE}%, keep the current position
+- Never move more than {MAX_SINGLE_TX_USDC} USDC per transaction
+- Respect the minimum cooldown of {MIN_TIME_BETWEEN_MOVES}s between moves
+- Maximum acceptable gas cost: ${MAX_GAS_COST_USD}
+- If uncertain, choose "hold"
+- If USDC is idle in the wallet, deposit it into the best-yielding protocol
+- If you detect anomalies (zero APY, low ETH for gas), use "alert"
 
-Regras:
-- So opere com USDC nos protocolos aprovados (Aave V3, Compound III)
-- So mova capital se a diferenca de APY for >= {MIN_APY_DIFF}%
-- Sempre considere o custo de gas antes de decidir
-- Se ambos APYs estiverem abaixo de {MIN_APY_ABSOLUTE}%, mantenha posicao atual
-- Nunca mova mais que {MAX_SINGLE_TX_USDC} USDC por transacao
-- Respeite o cooldown minimo de {MIN_TIME_BETWEEN_MOVES}s entre movimentacoes
-- Custo maximo de gas aceitavel: ${MAX_GAS_COST_USD}
-- Se estiver em duvida, escolha "hold" (nao fazer nada)
-- Se USDC estiver livre na wallet (nao depositado), deposite no protocolo com melhor APY
-- Se detectar anomalias (APY zerado, ETH baixo), use "alert"
-
-Analise os dados fornecidos e use UMA das tools disponiveis para agir."""
-
-# ============================================================
-# TOOLS (schemas para o Anthropic tool_use)
-# ============================================================
+Analyze the provided data and use exactly one available tool."""
 
 TOOLS = [
     {
         "name": "hold",
-        "description": "Manter posicao atual sem mudancas neste ciclo",
+        "description": "Keep the current position unchanged for this cycle",
         "input_schema": {
             "type": "object",
             "properties": {
                 "reason": {
                     "type": "string",
-                    "description": "Explicacao da decisao de nao agir",
+                    "description": "Why no action should be taken",
                 }
             },
             "required": ["reason"],
@@ -91,27 +65,27 @@ TOOLS = [
     },
     {
         "name": "move_funds",
-        "description": "Sacar USDC de um protocolo e depositar em outro",
+        "description": "Withdraw USDC from one protocol and deposit it into another",
         "input_schema": {
             "type": "object",
             "properties": {
                 "from_protocol": {
                     "type": "string",
                     "enum": ["aave_v3", "compound_iii", "wallet"],
-                    "description": "De onde sacar",
+                    "description": "Source of the funds",
                 },
                 "to_protocol": {
                     "type": "string",
                     "enum": ["aave_v3", "compound_iii"],
-                    "description": "Onde depositar",
+                    "description": "Destination protocol",
                 },
                 "amount_usdc": {
                     "type": "number",
-                    "description": "Quanto mover em USDC (usar -1 para mover tudo)",
+                    "description": "Amount of USDC to move (-1 means move everything)",
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Explicacao da decisao",
+                    "description": "Why the move should happen",
                 },
             },
             "required": ["from_protocol", "to_protocol", "amount_usdc", "reason"],
@@ -119,18 +93,18 @@ TOOLS = [
     },
     {
         "name": "alert",
-        "description": "Sinalizar situacao que precisa atencao humana",
+        "description": "Flag a condition that requires human attention",
         "input_schema": {
             "type": "object",
             "properties": {
                 "severity": {
                     "type": "string",
                     "enum": ["info", "warning", "critical"],
-                    "description": "Gravidade do alerta",
+                    "description": "Alert severity",
                 },
                 "message": {
                     "type": "string",
-                    "description": "Descricao do que foi detectado",
+                    "description": "Description of what was detected",
                 },
             },
             "required": ["severity", "message"],
@@ -139,29 +113,14 @@ TOOLS = [
 ]
 
 
-# ============================================================
-# FUNCOES INTERNAS
-# ============================================================
-
-
 def _state_to_prompt(state: BotState) -> str:
-    """Converte BotState em texto legivel para o LLM."""
+    """Serialize BotState into readable JSON for the LLM."""
     data = asdict(state)
     return json.dumps(data, indent=2, default=str)
 
 
 def _parse_response(response) -> LLMAction:
-    """Extrai a tool_use do response do Claude e converte em LLMAction.
-
-    CONCEITO: stop_reason
-    O Claude retorna um "stop_reason" que indica POR QUE parou de gerar:
-    - "tool_use": ele quer chamar uma tool (o que esperamos)
-    - "end_turn": ele respondeu em texto livre (sem tool)
-    - "max_tokens": cortou por limite
-
-    Se nao for "tool_use", algo deu errado e retornamos hold por seguranca.
-    """
-    # Procurar bloco de tool_use no response
+    """Extract the Claude tool call and convert it into LLMAction."""
     tool_block = None
     for block in response.content:
         if block.type == "tool_use":
@@ -169,25 +128,21 @@ def _parse_response(response) -> LLMAction:
             break
 
     if tool_block is None:
-        logger.warning("LLM nao retornou tool_use. Fallback para hold.")
-        # Extrair texto se houver, para log
+        logger.warning("LLM did not return tool_use. Falling back to hold.")
         text = ""
         for block in response.content:
             if block.type == "text":
                 text = block.text
                 break
-        return LLMAction(action="hold", reason=f"LLM sem tool_use: {text[:200]}")
+        return LLMAction(action="hold", reason=f"LLM without tool_use: {text[:200]}")
 
     tool_name = tool_block.name
     tool_input = tool_block.input
 
     if tool_name == "hold":
-        return LLMAction(
-            action="hold",
-            reason=tool_input.get("reason", ""),
-        )
+        return LLMAction(action="hold", reason=tool_input.get("reason", ""))
 
-    elif tool_name == "move_funds":
+    if tool_name == "move_funds":
         return LLMAction(
             action="move_funds",
             from_protocol=tool_input.get("from_protocol", ""),
@@ -196,38 +151,23 @@ def _parse_response(response) -> LLMAction:
             reason=tool_input.get("reason", ""),
         )
 
-    elif tool_name == "alert":
+    if tool_name == "alert":
         return LLMAction(
             action="alert",
             severity=tool_input.get("severity", "info"),
             message=tool_input.get("message", ""),
         )
 
-    else:
-        logger.warning(f"Tool desconhecida: {tool_name}. Fallback para hold.")
-        return LLMAction(action="hold", reason=f"Tool desconhecida: {tool_name}")
-
-
-# ============================================================
-# FUNCAO PUBLICA: get_decision()
-# ============================================================
+    logger.warning("Unknown tool: %s. Falling back to hold.", tool_name)
+    return LLMAction(action="hold", reason=f"Unknown tool: {tool_name}")
 
 
 def get_decision(state: BotState) -> LLMAction:
-    """Envia estado para o Claude e retorna a decisao como LLMAction.
-
-    Esta e a UNICA funcao publica do engine. Ela:
-    1. Serializa o BotState em texto
-    2. Chama a API do Claude com tool_use
-    3. Parseia o response
-    4. Retorna LLMAction
-
-    Se QUALQUER coisa falhar, retorna hold (safe default).
-    """
-    logger.info("Consultando Claude para decisao...")
+    """Send state to Claude and return the chosen action."""
+    logger.info("Querying Claude for a decision...")
 
     state_text = _state_to_prompt(state)
-    user_message = f"Estado atual do bot:\n\n{state_text}\n\nAnalise e decida a acao."
+    user_message = f"Current bot state:\n\n{state_text}\n\nAnalyze and decide on the action."
 
     try:
         response = client.messages.create(
@@ -240,20 +180,25 @@ def get_decision(state: BotState) -> LLMAction:
 
         action = _parse_response(response)
 
-        logger.info(f"Decisao do LLM: {action.action}")
+        logger.info("LLM decision: %s", action.action)
         if action.action == "hold":
-            logger.info(f"  Motivo: {action.reason}")
+            logger.info("  Reason: %s", action.reason)
         elif action.action == "move_funds":
-            logger.info(f"  {action.from_protocol} -> {action.to_protocol} | {action.amount_usdc} USDC")
-            logger.info(f"  Motivo: {action.reason}")
+            logger.info(
+                "  %s -> %s | %s USDC",
+                action.from_protocol,
+                action.to_protocol,
+                action.amount_usdc,
+            )
+            logger.info("  Reason: %s", action.reason)
         elif action.action == "alert":
-            logger.info(f"  [{action.severity}] {action.message}")
+            logger.info("  [%s] %s", action.severity, action.message)
 
         return action
 
     except anthropic.APIError as e:
-        logger.error(f"Erro na API do Claude: {e}")
+        logger.error("Claude API error: %s", e)
         return LLMAction(action="hold", reason=f"API error: {e}")
     except Exception as e:
-        logger.error(f"Erro inesperado no engine: {e}")
+        logger.error("Unexpected engine error: %s", e)
         return LLMAction(action="hold", reason=f"Unexpected error: {e}")
