@@ -12,6 +12,8 @@ Cycle flow:
 """
 
 import logging
+import argparse
+import os
 import sys
 import time
 
@@ -21,6 +23,7 @@ from config import (
     PAPER_TRADING,
     PUBLIC_ADDRESS,
     BASE_RPC_URL,
+    validate_runtime_config,
 )
 from state import (
     load_history,
@@ -28,18 +31,15 @@ from state import (
     record_error,
     clear_errors,
 )
-from listener import build_state
-from engine import get_decision
-from firewall import validate_action
-from executor import execute_action
 
 logger = logging.getLogger("bot")
 
 
-def setup_logging():
+def setup_logging(log_file: str = "bot.log"):
     """Configure logging for console and file output."""
     root = logging.getLogger()
     root.setLevel(logging.INFO)
+    root.handlers.clear()
 
     formatter = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -50,13 +50,21 @@ def setup_logging():
     console_handler.setFormatter(formatter)
     root.addHandler(console_handler)
 
-    file_handler = logging.FileHandler("bot.log")
-    file_handler.setFormatter(formatter)
-    root.addHandler(file_handler)
+    try:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+    except OSError as e:
+        root.warning("File logging disabled: %s", e)
 
 
 def run_cycle() -> None:
     """Run a full bot cycle. Useful on its own during testing."""
+    from listener import build_state
+    from engine import get_decision
+    from firewall import validate_action
+    from executor import execute_action
+
     logger.info("=" * 60)
     logger.info("START OF CYCLE")
     logger.info("=" * 60)
@@ -125,9 +133,38 @@ def run_cycle() -> None:
     logger.info("END OF CYCLE")
 
 
-def main():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run Base Yield Lab, a DeFi automation study bot for Base."
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one cycle and exit instead of looping forever.",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=os.getenv("BOT_LOG_FILE", "bot.log"),
+        help="Path to the log file. Defaults to BOT_LOG_FILE or bot.log.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None):
     """Run run_cycle() forever with the configured polling interval."""
-    setup_logging()
+    args = parse_args(argv)
+    setup_logging(args.log_file)
+
+    missing_config = validate_runtime_config()
+    if missing_config:
+        logger.error(
+            "Missing required environment variables: %s",
+            ", ".join(missing_config),
+        )
+        logger.error(
+            "Copy .env.example to .env and fill the required values before running."
+        )
+        raise SystemExit(2)
 
     mode = "PAPER TRADING" if PAPER_TRADING else "LIVE TRADING"
     logger.info("Bot starting in mode: %s", mode)
@@ -143,6 +180,10 @@ def main():
             history.consecutive_errors,
         )
     clear_errors(history)
+
+    if args.once:
+        run_cycle()
+        return
 
     while True:
         try:

@@ -91,6 +91,7 @@ Paper trading should remain enabled until the operator understands every transac
 - Python 3.12+
 - Base RPC URL
 - Dedicated EVM wallet
+- Anthropic API key for the decision engine
 - USDC and ETH on Base if running live transactions
 
 ## Setup
@@ -110,14 +111,29 @@ PUBLIC_ADDRESS=
 BASE_RPC_URL=
 ANTHROPIC_API_KEY=
 PAPER_TRADING=true
+BOT_LOG_FILE=bot.log
 ```
 
 Keep `PAPER_TRADING=true` while studying or testing. Setting it to `false` allows the executor to broadcast real transactions.
+
+Even in paper trading, the bot still needs a valid wallet, RPC URL, and API key because it reads live Base data and builds transactions locally before deciding whether to broadcast them.
 
 ## Run The Bot
 
 ```bash
 python src/base_yield_lab/main.py
+```
+
+Show available options:
+
+```bash
+python src/base_yield_lab/main.py --help
+```
+
+Run a single cycle and exit:
+
+```bash
+python src/base_yield_lab/main.py --once
 ```
 
 The bot writes runtime logs to:

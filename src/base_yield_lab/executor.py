@@ -10,7 +10,6 @@ Moves between protocols use three transactions:
 import logging
 
 from web3 import Web3
-from eth_account import Account
 
 from config import (
     BASE_RPC_URL,
@@ -32,7 +31,6 @@ from state import LLMAction
 logger = logging.getLogger(__name__)
 
 w3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
-account = Account.from_key(PRIVATE_KEY)
 wallet = Web3.to_checksum_address(PUBLIC_ADDRESS)
 
 usdc_contract = w3.eth.contract(

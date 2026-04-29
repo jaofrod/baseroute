@@ -229,3 +229,14 @@ USDC_DECIMALS = 6
 
 DEFAULT_GAS_LIMIT = 300_000
 ETH_PRICE_USD = 2500.0
+
+
+def validate_runtime_config() -> list[str]:
+    """Return missing runtime settings required to run a bot cycle."""
+    required = {
+        "PRIVATE_KEY": PRIVATE_KEY,
+        "PUBLIC_ADDRESS": PUBLIC_ADDRESS,
+        "BASE_RPC_URL": BASE_RPC_URL,
+        "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
+    }
+    return [name for name, value in required.items() if not value]
